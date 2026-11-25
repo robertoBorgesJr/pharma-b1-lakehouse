@@ -1,0 +1,8 @@
+# Copy to terraform.tfvars and fill in real values.
+# Never commit terraform.tfvars — it is listed in .gitignore.
+
+azure_subscription_id     = "<your-azure-subscription-id>"
+databricks_rg_name        = "<resource-group-of-databricks-workspace>"
+databricks_workspace_name = "<databricks-workspace-name>"
+access_connector_name     = "<access-connector-name>"
+access_connector_rg       = "<resource-group-of-access-connector>"
