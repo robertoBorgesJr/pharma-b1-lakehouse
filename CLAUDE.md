@@ -1,182 +1,181 @@
-# CLAUDE.md — Laboratório SAP Business One → Azure Databricks
+# CLAUDE.md — SAP Business One → Azure Databricks Lab
 
-## Contexto do projeto
+## Project context
 
-Laboratório pessoal de portfólio que simula a integração de um **ERP SAP Business One (B1)** de uma
-**indústria farmacêutica fictícia** com um **lakehouse no Azure Databricks** (Medallion + modelagem dimensional).
+Personal portfolio lab that simulates the integration of a **SAP Business One (B1) ERP** from a
+**fictional pharmaceutical manufacturer** with a **lakehouse on Azure Databricks** (Medallion + dimensional modeling).
 
-Objetivo: demonstrar, de ponta a ponta, extração incremental de um banco SQL Server com estrutura de B1,
-CDC, camadas bronze/silver/gold, orquestração e CI/CD — o mesmo desenho que seria aplicado em um ambiente real.
+Goal: demonstrate end-to-end incremental extraction from a SQL Server database with B1 structure,
+CDC, bronze/silver/gold layers, orchestration, and CI/CD — the same design that would be applied in a real environment.
 
-> Projeto público (GitHub). **Não citar nomes de empresas reais** em código, dados, commits ou documentação.
-> Todos os dados são sintéticos.
+> Public project (GitHub). **Do not mention real company names** in code, data, commits, or documentation.
+> All data is synthetic.
 
-Autor: Roberto Borges (engenheiro de dados — SQL, Python, PySpark, Delta Lake, Unity Catalog, Terraform, DAB).
-Desenvolvimento local em **Windows 11 + VS Code + Claude Code**, máquina com **8 GB de RAM** (evitar stacks pesadas locais).
+Author: Roberto Borges (data engineer — SQL, Python, PySpark, Delta Lake, Unity Catalog, Terraform, DAB).
+Local development on **Windows 11 + VS Code + Claude Code**, machine with **8 GB RAM** (avoid heavy local stacks).
 
 ---
 
-## Ambiente já provisionado
+## Provisioned environment
 
-| Item | Valor |
+| Item | Value |
 |---|---|
-| Cloud | Azure (assinatura pay-as-you-go) |
+| Cloud | Azure (pay-as-you-go subscription) |
 | Resource group | `rg-sap-b1-lab` |
-| Servidor lógico | `sql-b1-lab-roberto.database.windows.net` |
-| Banco | `SBO_PHARMA_LAB` (Azure SQL Database — oferta gratuita) |
-| Tier | General Purpose, **Serverless**, 32 GB máx. |
-| Autenticação | SQL + Microsoft Entra; login SQL `b1admin` |
-| Rede | Endpoint público com firewall: IP do cliente + "Allow Azure services" (aceitável só para lab) |
+| Logical server | `sql-b1-lab-roberto.database.windows.net` |
+| Database | `SBO_PHARMA_LAB` (Azure SQL Database — free offer) |
+| Tier | General Purpose, **Serverless**, 32 GB max. |
+| Authentication | SQL + Microsoft Entra; SQL login `b1admin` |
+| Network | Public endpoint with firewall: client IP + "Allow Azure services" (acceptable for lab only) |
 
-### Limites da oferta gratuita (respeitar sempre)
-- 100.000 vCore-segundos/mês (~28 h de 1 vCore), 32 GB de dados; renova todo mês.
-- Configurado para **auto-pause ao atingir o limite** (sem cobrança).
-- O banco só pausa **sem conexões ativas**. Portanto:
-  - jobs devem **conectar, ler/escrever e desconectar** — nada de conexões persistentes;
-  - **não** deixar simuladores rodando em loop;
-  - o gateway do Lakeflow Connect (CDC gerenciado) fica conectado 24/7 e consome a cota em ~1 dia:
-    usar **só em teste pontual** e excluir o gateway no mesmo dia.
+### Free offer limits (always respect)
+- 100,000 vCore-seconds/month (~28 h of 1 vCore), 32 GB data; resets every month.
+- Configured to **auto-pause on limit reached** (no charge).
+- The database only pauses **without active connections**. Therefore:
+  - jobs must **connect, read/write, and disconnect** — no persistent connections;
+  - **do not** leave simulators running in a loop;
+  - the Lakeflow Connect gateway (managed CDC) stays connected 24/7 and exhausts the quota in ~1 day:
+    use **only for a point-in-time test** and delete the gateway the same day.
 
-### Segredos
-- **Nunca** commitar senhas, connection strings ou tokens.
-- Local: arquivo `.env` (no `.gitignore`), com `.env.example` versionado sem valores.
-- Databricks: secret scope (ex.: `b1-lab`) ou conexão do Unity Catalog.
+### Secrets
+- **Never** commit passwords, connection strings, or tokens.
+- Local: `.env` file (in `.gitignore`), with `.env.example` versioned without values.
+- Databricks: secret scope (e.g. `b1-lab`) or Unity Catalog connection.
 
 ---
 
-## Arquitetura alvo
+## Target architecture
 
 ```
-Azure SQL (estrutura SAP B1)
-   │  CDC por watermark (UpdateDate + UpdateTS) — JDBC, serverless
+Azure SQL (SAP B1 structure)
+   │  watermark CDC (UpdateDate + UpdateTS) — JDBC, serverless
    ▼
-BRONZE  (append, metadados _ingested_at, _batch_id, _source)
-   │  incremental por ingestão (Structured Streaming + checkpoint, trigger availableNow)
+BRONZE  (append, metadata _ingested_at, _batch_id, _source)
+   │  incremental by ingestion (Structured Streaming + checkpoint, trigger availableNow)
    ▼
-SILVER  (tipagem, dedup, nomes de negócio, MERGE, expectations; Change Data Feed habilitado)
+SILVER  (typed, deduped, English business names, MERGE, expectations; Change Data Feed enabled)
    │  Change Data Feed → MERGE
    ▼
-GOLD    (modelo dimensional: fatos + dimensões conformadas, SCD2 em cadastros)
+GOLD    (dimensional model: facts + conformed dimensions, SCD2 on master data)
 ```
 
-### Decisões já tomadas
-1. **Compute:** serverless por padrão (jobs horários curtos, sem custo ocioso).
-   Compute clássico só quando: o gateway do CDC gerenciado exigir, restrições de rede/IP,
-   dependências não suportadas no serverless (JARs, init scripts), ou carga histórica longa
-   em **job cluster** dimensionado (efêmero — destruído ao final).
-2. **Carga histórica inicial:** em lotes por período, grava o último watermark ao final;
-   a partir daí o mesmo código incremental roda em serverless de hora em hora.
-3. **CDC origem → bronze:** watermark por `UpdateDate` + `UpdateTS`, com **janela de sobreposição**
-   (reler dia atual e anterior quando não houver `UpdateTS`); MERGE resolve duplicidades.
-4. **Exclusões:** documentos fiscais no B1 são cancelados (`CANCELED = 'Y'`) ou fechados (`DocStatus = 'C'`),
-   não apagados → capturados pelo watermark. Cadastros e rascunhos podem ser apagados →
-   **reconciliação periódica de chaves** (marcar como excluído no lake).
-5. **Cabeçalho + linhas:** filtrar pelo cabeçalho (ex.: OINV) e trazer as linhas (INV1) pelo `DocEntry`.
-6. **Bronze → silver:** incremental pela **data de ingestão**, não pela data da origem.
-7. **Silver → gold:** Change Data Feed; descartar `update_preimage`, deduplicar por chave pela maior
-   `_commit_version`, tratar `delete`; em agregados, recalcular só as chaves afetadas.
-8. **Evolução opcional:** Change Tracking / CDC nativo do SQL Server + Lakeflow Connect
-   (comparar com o watermark; teste pontual por causa da cota).
-9. **Termo "watermark"** neste projeto = controle de carga incremental, **não** o `withWatermark`
-   do Structured Streaming.
+### Decisions already made
+1. **Compute:** serverless by default (short hourly jobs, no idle cost).
+   Classic compute only when: managed CDC gateway requires it, network/IP restrictions,
+   dependencies not supported in serverless (JARs, init scripts), or long historical load
+   in a sized **job cluster** (ephemeral — destroyed at the end).
+2. **Initial historical load:** in batches by period, saves the last watermark at the end;
+   from then on the same incremental code runs in serverless every hour.
+3. **Source CDC → bronze:** watermark by `UpdateDate` + `UpdateTS`, with an **overlap window**
+   (re-read current and previous day when there is no `UpdateTS`); MERGE resolves duplicates.
+4. **Deletions:** fiscal documents in B1 are cancelled (`CANCELED = 'Y'`) or closed (`DocStatus = 'C'`),
+   not deleted → captured by watermark. Master data and drafts can be deleted →
+   **periodic key reconciliation** (mark as deleted in the lake).
+5. **Header + lines:** filter by header (e.g. OINV) and fetch lines (INV1) by `DocEntry`.
+6. **Bronze → silver:** incremental by **ingestion date**, not by source date.
+7. **Silver → gold:** Change Data Feed; discard `update_preimage`, deduplicate by key using the highest
+   `_commit_version`, handle `delete`; for aggregates, recalculate only the affected keys.
+8. **Optional evolution:** Change Tracking / native SQL Server CDC + Lakeflow Connect
+   (compare with watermark; point-in-time test due to quota).
+9. **Term "watermark"** in this project = incremental load control, **not** Structured Streaming's `withWatermark`.
 
 ---
 
-## Modelo de dados de origem (estrutura B1 simulada)
+## Source data model (simulated B1 structure)
 
-Nomes de tabelas/colunas seguem o padrão SAP B1 (validar detalhes contra a documentação SAP quando possível).
+Table/column names follow the SAP B1 standard (validate details against SAP documentation when possible).
 
-| Área | Tabelas |
+| Area | Tables |
 |---|---|
-| Mestres | `OCRD` (parceiros), `OITM` (itens), `OITW` (estoque por depósito), `OWHS` (depósitos) |
-| Comercial | `ORDR`/`RDR1` (pedidos de venda), `OINV`/`INV1` (NF saída), `ORIN`/`RIN1` (devoluções) |
-| Compras | `OPOR`/`POR1` (pedidos de compra), `OPDN`/`PDN1` (recebimento), `OPCH`/`PCH1` (NF entrada) |
-| Financeiro | `OJDT`/`JDT1` (lançamentos), `OACT` (plano de contas), `OOCR` (centros de custo) |
-| Produção/PCP | `OWOR`/`WOR1` (ordens de produção), `OITT`/`ITT1` (estrutura de produto) |
-| Qualidade/Lotes | `OBTN` (lotes — rastreabilidade e validade são críticas no setor farmacêutico) |
-| Histórico | `ACRD`, `AITM`, `ADOC`/`ADO1` (log de alterações, `LogInstanc`) — base para SCD2 e auditoria |
+| Master data | `OCRD` (business partners), `OITM` (items), `OITW` (stock by warehouse), `OWHS` (warehouses) |
+| Sales | `ORDR`/`RDR1` (sales orders), `OINV`/`INV1` (outbound invoices), `ORIN`/`RIN1` (returns) |
+| Purchasing | `OPOR`/`POR1` (purchase orders), `OPDN`/`PDN1` (goods receipt), `OPCH`/`PCH1` (vendor invoice) |
+| Finance | `OJDT`/`JDT1` (journal entries), `OACT` (chart of accounts), `OOCR` (cost centers) |
+| Production/MRP | `OWOR`/`WOR1` (production orders), `OITT`/`ITT1` (bill of materials) |
+| Quality/Lots | `OBTN` (lots — traceability and expiry are critical in the pharma sector) |
+| Audit history | `ACRD`, `AITM`, `ADOC`/`ADO1` (change log, `LogInstanc`) — basis for SCD2 and auditing |
 
-Colunas de controle obrigatórias nas tabelas simuladas: `DocEntry` (PK interna de documentos),
-`CreateDate`, `UpdateDate` (só data), `UpdateTS`/`CreateTS` (hora como inteiro HHMMSS),
+Required control columns in simulated tables: `DocEntry` (internal document PK),
+`CreateDate`, `UpdateDate` (date only), `UpdateTS`/`CreateTS` (time as integer HHMMSS),
 `CANCELED`, `DocStatus`.
 
-**Escopo do MVP:** `OCRD`, `OITM`, `OITW`, `ORDR`/`RDR1`, `OINV`/`INV1`, `OBTN`.
-Demais tabelas entram em fases seguintes.
+**MVP scope:** `OCRD`, `OITM`, `OITW`, `ORDR`/`RDR1`, `OINV`/`INV1`, `OBTN`.
+Remaining tables are added in later phases.
 
 ---
 
 ## Lakehouse (Databricks / Unity Catalog)
 
-- Catálogos separados: `b1_lab_dev` e `b1_lab_prd`; schemas `bronze`, `silver`, `gold`, `controle`.
-- Tabela de controle: `controle.watermark_pipelines` (um registro por pipeline/tabela/camada, atualizada via MERGE).
-- Silver com nomes de negócio (ex.: `OINV` → `nota_fiscal_saida`) e `delta.enableChangeDataFeed = true`
-  desde a criação (CDF não é retroativo).
+- Separate catalogs: `pharma_lakehouse_dev` and `pharma_lakehouse_prod`; schemas `bronze_sap_b1`, `silver_sap_b1`, `gold_sap_b1`, `control`.
+- Control table: `control.watermark_pipelines` (one record per pipeline/table/layer, updated via MERGE).
+- Silver with English business names (e.g. `OINV` → `sales_invoice`) and `delta.enableChangeDataFeed = true`
+  from creation (CDF is not retroactive).
 - Gold (MVP):
-  - Fatos: `fato_vendas` (grão: linha de NF), `fato_estoque_snapshot`
-  - Dimensões: `dim_cliente` (SCD2), `dim_produto` (SCD2), `dim_lote`, `dim_deposito`, `dim_tempo`
-- Fase futura: integrar Salesforce (Account/Opportunity/Product2) com de-para por **CNPJ** na `dim_cliente`.
-- Governança: column masks / row filters para dados pessoais (LGPD) quando houver.
+  - Facts: `fact_sales` (grain: invoice line), `fact_inventory_snapshot`
+  - Dimensions: `dim_customer` (SCD2), `dim_product` (SCD2), `dim_lot`, `dim_warehouse`, `dim_date`
+- Future phase: integrate Salesforce (Account/Opportunity/Product2) with `dim_customer` unified by **CNPJ**.
+- Governance: column masks / row filters for personal data (LGPD compliance) where applicable.
 
 ---
 
-## Estrutura sugerida do repositório
+## Suggested repository structure
 
 ```
 pharma-b1-lakehouse/
 ├── CLAUDE.md
-├── README.md                  # visão geral, diagrama, "como seria em produção"
+├── README.md                  # overview, diagram, "how it would work in production"
 ├── .env.example
 ├── sql/
-│   ├── ddl/                   # CREATE TABLE no padrão B1
-│   └── cdc/                   # scripts para habilitar Change Tracking/CDC (fase opcional)
+│   ├── ddl/                   # CREATE TABLE in B1 pattern
+│   └── cdc/                   # scripts to enable Change Tracking/CDC (optional phase)
 ├── generator/                 # Python + pyodbc (ODBC Driver 18 for SQL Server)
-│   ├── historical_load.py     # carga histórica (ex.: 2 anos)
-│   └── simulate_activity.py   # execução pontual: novos pedidos, faturamento, cancelamentos, alterações
+│   ├── historical_load.py     # historical load (e.g. 2 years)
+│   └── simulate_activity.py   # one-shot run: new orders, invoicing, cancellations, updates
 ├── src/
-│   └── b1_lakehouse/          # pacote Python (pyproject.toml), utils reaproveitáveis
+│   └── b1_lakehouse/          # Python package (pyproject.toml), reusable utilities
 │       ├── utils/             # connections.py, environment.py, watermark_control.py
 │       ├── bronze/
 │       ├── silver/
 │       └── gold/
-├── resources/                 # definições de jobs do Databricks Asset Bundle
-├── databricks.yml             # DAB: targets dev/prd; serverless padrão, job_cluster para carga histórica
-├── infra/                     # Terraform (Unity Catalog, schemas, permissões)
-└── .github/workflows/         # CI/CD (validate/deploy do bundle)
+├── resources/                 # Databricks Asset Bundle job definitions
+├── databricks.yml             # DAB: targets dev/prod; serverless default, job_cluster for historical load
+├── infra/                     # Terraform (Unity Catalog, schemas, permissions)
+└── .github/workflows/         # CI/CD (validate/deploy bundle)
 ```
 
 ---
 
-## Convenções de código
+## Code conventions
 
-- Python com type hints; funções pequenas e testáveis; logging estruturado (sem `print`).
-- SQL do gerador: inserções em lote, transações explícitas, fechar conexão ao final.
-- PySpark: evitar `collect()` em dados grandes; MERGE idempotente; reprocessamento seguro.
-- Nomes em português para objetos de negócio (silver/gold); nomes originais do B1 na bronze.
-- Commits pequenos e descritivos.
-- Sempre que surgir uma decisão de arquitetura, registrar em `README.md` (seção "Decisões").
+- Python with type hints; small testable functions; structured logging (no `print`).
+- Generator SQL: batch inserts, explicit transactions, close connection at the end.
+- PySpark: avoid `collect()` on large data; idempotent MERGE; safe for reprocessing.
+- English names for business objects (silver/gold); original B1 names in bronze.
+- Small, descriptive commits.
+- Whenever an architectural decision arises, record it in `README.md` (section "Decisions").
 
 ---
 
 ## Roadmap
 
-1. [ ] DDL das tabelas do MVP no `SBO_PHARMA_LAB`
-2. [ ] Gerador da carga histórica (dados com cara de farma: lotes, validade, depósitos)
-3. [ ] Simulador de atividade (insert/update/cancelamento/exclusão de cadastro)
-4. [ ] Bronze: extração JDBC por watermark (serverless) + tabela de controle
-5. [ ] Silver: streaming com checkpoint + MERGE + expectations + CDF
-6. [ ] Gold: fatos e dimensões (SCD2) via CDF
-7. [ ] Reconciliação de exclusões (cadastros)
-8. [ ] DAB + GitHub Actions (dev/prd); job horário encadeado bronze → silver → gold
-9. [ ] Observabilidade: alertas de falha, dashboard de saúde dos pipelines
-10. [ ] (Opcional) Change Tracking/CDC nativo + teste pontual do Lakeflow Connect
-11. [ ] (Futuro) Origem Salesforce e `dim_cliente` unificada por CNPJ
+1. [ ] DDL for MVP tables in `SBO_PHARMA_LAB`
+2. [ ] Historical data generator (pharma-flavored data: lots, expiry dates, warehouses)
+3. [ ] Activity simulator (insert/update/cancel/delete of master records)
+4. [ ] Bronze: JDBC extraction by watermark (serverless) + control table
+5. [ ] Silver: streaming with checkpoint + MERGE + expectations + CDF
+6. [ ] Gold: facts and dimensions (SCD2) via CDF
+7. [ ] Deletion reconciliation (master data)
+8. [ ] DAB + GitHub Actions (dev/prod); hourly chained job bronze → silver → gold
+9. [ ] Observability: failure alerts, pipeline health dashboard
+10. [ ] (Optional) Change Tracking/native CDC + Lakeflow Connect point-in-time test
+11. [ ] (Future) Salesforce source and unified `dim_customer` by CNPJ
 
 ---
 
-## Como o Claude deve trabalhar neste projeto
+## How Claude should work in this project
 
-- Antes de sugerir algo que rode no banco, considerar o **consumo da cota de vCore-segundos**.
-- Para afirmações sobre recursos do Databricks, preferir a documentação oficial (docs.databricks.com)
-  e dizer explicitamente quando algo não foi confirmado.
-- Não reescrever arquivos inteiros sem necessidade; propor mudanças incrementais.
-- Ao concluir uma etapa do roadmap, marcar o item acima.
+- Before suggesting anything that runs against the database, consider the **vCore-second quota consumption**.
+- For claims about Databricks features, prefer the official documentation (docs.databricks.com)
+  and explicitly state when something has not been confirmed.
+- Do not rewrite entire files without necessity; propose incremental changes.
+- When completing a roadmap step, check off the item above.

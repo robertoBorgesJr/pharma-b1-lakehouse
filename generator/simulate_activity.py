@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-simulate_activity.py — Simulador de atividade pontual para SBO_PHARMA_LAB.
+simulate_activity.py — One-shot activity simulator for SBO_PHARMA_LAB.
 
-Executa um "dia" de movimentações típicas de uma indústria farmacêutica.
-Cada execução produz mudanças detectáveis pelo watermark (UpdateDate+UpdateTS):
+Runs a "day" of typical movements for a pharmaceutical manufacturer.
+Each run produces changes detectable by the watermark (UpdateDate+UpdateTS):
 
-  1. Novos pedidos de venda (ORDR/RDR1)
-  2. Faturamento de pedidos abertos → NFs (OINV/INV1)
-  3. Cancelamento de um pedido aberto
-  4. Alteração de cadastro de parceiros e itens (bumpa UpdateDate+UpdateTS)
-  5. Recebimento de novo lote (OBTN)
-  6. Inativação pontual de cliente (validFor='N') — testa reconciliação de exclusões
+  1. New sales orders (ORDR/RDR1)
+  2. Invoice open orders → NFs (OINV/INV1)
+  3. Cancel an open order
+  4. Update master data for partners and items (bumps UpdateDate+UpdateTS)
+  5. Receive a new lot (OBTN)
+  6. One-off customer inactivation (validFor='N') — tests deletion reconciliation
 
-Uso:
+Usage:
     python generator/simulate_activity.py
     python generator/simulate_activity.py --date 2026-11-25
     python generator/simulate_activity.py --orders 5
@@ -54,7 +54,7 @@ CFOP_INTER = "6102"
 _STREET_NAMES = ["Paulista", "Brasil", "das Nações", "do Comércio", "Industrial", "das Flores"]
 
 # ---------------------------------------------------------------------------
-# Conexão
+# Connection
 # ---------------------------------------------------------------------------
 
 
@@ -77,12 +77,12 @@ def get_connection() -> pyodbc.Connection:
 
 
 # ---------------------------------------------------------------------------
-# Utilitários
+# Utilities
 # ---------------------------------------------------------------------------
 
 
 def _ts_now() -> int:
-    """Hora atual como inteiro HHMMSS."""
+    """Current time as HHMMSS integer."""
     n = datetime.now()
     return n.hour * 10_000 + n.minute * 100 + n.second
 
@@ -92,7 +92,7 @@ def _ts_rand(rng: random.Random) -> int:
 
 
 def _nfe_chave(doc_date: date, seq_nf: str, rng: random.Random) -> str:
-    """Chave NF-e fictícia de exatamente 44 dígitos."""
+    """Fictional NF-e access key of exactly 44 digits."""
     return (
         "35"
         + doc_date.strftime("%y%m")
@@ -107,7 +107,7 @@ def _nfe_chave(doc_date: date, seq_nf: str, rng: random.Random) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Leitura do estado atual do banco
+# Read current database state
 # ---------------------------------------------------------------------------
 
 
@@ -219,7 +219,7 @@ def _next_doc_num(cur: pyodbc.Cursor, table: str) -> int:
 
 
 def _next_batch_seq(cur: pyodbc.Cursor, item_code: str, ym: str) -> int:
-    """Maior sequência de lote do mês para o item, +1."""
+    """Highest lot sequence for the item this month, +1."""
     prefix = f"L{ym}{item_code[:4].upper()}"
     cur.execute(
         "SELECT ISNULL(MAX(CAST(RIGHT(BatchNum, 3) AS INT)), 0) + 1 "
@@ -230,7 +230,7 @@ def _next_batch_seq(cur: pyodbc.Cursor, item_code: str, ym: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Ação 1 — Novos pedidos
+# Action 1 — New orders
 # ---------------------------------------------------------------------------
 
 
@@ -239,9 +239,9 @@ def _make_order_lines(
     items: list[_ItemLot],
     n_lines: int,
 ) -> tuple[list[_OrderLine], float, float]:
-    """Retorna (linhas, doc_total, vat_total)."""
+    """Returns (lines, doc_total, vat_total)."""
     chosen: list[_ItemLot] = rng.sample(items, min(n_lines, len(items)))
-    # Deduplica por ItemCode mantendo a primeira ocorrência
+    # Deduplicate by ItemCode preserving first occurrence
     seen: set[str] = set()
     deduped: list[_ItemLot] = []
     for il in chosen:
@@ -291,9 +291,9 @@ def insert_new_orders(
     n_orders: int,
     start_num: int,
 ) -> int:
-    """Insere n_orders pedidos. Retorna próximo DocNum livre."""
+    """Inserts n_orders orders. Returns the next free DocNum."""
     if not clients or not items:
-        log.warning("Sem clientes ou itens disponíveis — pedidos ignorados.")
+        log.warning("No clients or items available — orders skipped.")
         return start_num
 
     sql_hdr = """
@@ -345,12 +345,12 @@ def insert_new_orders(
             next_num += 1
 
     conn.commit()
-    log.info("Novos pedidos: %d inseridos.", n_orders)
+    log.info("New orders: %d inserted.", n_orders)
     return next_num
 
 
 # ---------------------------------------------------------------------------
-# Ação 2 — Faturar pedidos abertos
+# Action 2 — Invoice open orders
 # ---------------------------------------------------------------------------
 
 
@@ -362,9 +362,9 @@ def invoice_open_orders(
     start_inv_num: int,
     max_to_invoice: int = 5,
 ) -> int:
-    """Cria OINV+INV1 para até max_to_invoice pedidos abertos. Retorna próximo DocNum."""
+    """Creates OINV+INV1 for up to max_to_invoice open orders. Returns next DocNum."""
     if not open_orders:
-        log.info("Sem pedidos abertos para faturar.")
+        log.info("No open orders to invoice.")
         return start_inv_num
 
     to_invoice = rng.sample(open_orders, min(max_to_invoice, len(open_orders)))
@@ -434,12 +434,12 @@ def invoice_open_orders(
             nnum += 1
 
     conn.commit()
-    log.info("Pedidos faturados: %d NFs emitidas.", len(to_invoice))
+    log.info("Orders invoiced: %d NFs issued.", len(to_invoice))
     return nnum
 
 
 # ---------------------------------------------------------------------------
-# Ação 3 — Cancelar pedido
+# Action 3 — Cancel order
 # ---------------------------------------------------------------------------
 
 
@@ -449,10 +449,10 @@ def cancel_order(
     sim_date: date,
 ) -> None:
     if not open_orders:
-        log.info("Sem pedidos abertos para cancelar.")
+        log.info("No open orders to cancel.")
         return
 
-    # Escolhe o mais antigo (vencido) ou aleatório
+    # Pick the oldest (past due) or random
     target = min(open_orders, key=lambda o: o.doc_due_date)
     ts = _ts_now()
 
@@ -470,13 +470,13 @@ def cancel_order(
 
     conn.commit()
     log.info(
-        "Pedido cancelado: ORDR DocNum=%d DocEntry=%d (vencimento: %s).",
+        "Order cancelled: ORDR DocNum=%d DocEntry=%d (due date: %s).",
         target.doc_num, target.doc_entry, target.doc_due_date,
     )
 
 
 # ---------------------------------------------------------------------------
-# Ação 4 — Alterações de cadastro (bumpa watermark)
+# Action 4 — Master data updates (bumps watermark)
 # ---------------------------------------------------------------------------
 
 
@@ -489,7 +489,7 @@ def update_masters(
     ts = _ts_now()
 
     with conn.cursor() as cur:
-        # Pega n_clients clientes aleatórios para atualizar
+        # Pick n_clients random clients to update
         cur.execute(f"""
             SELECT TOP {n_clients} CardCode
             FROM dbo.OCRD
@@ -506,9 +506,9 @@ def update_masters(
                 SET Phone1=?, Address=?, UpdateDate=?, UpdateTS=?
                 WHERE CardCode=?
             """, new_phone, new_addr, sim_date, ts, code)
-            log.info("  OCRD atualizado: CardCode=%s", code)
+            log.info("  OCRD updated: CardCode=%s", code)
 
-        # Atualiza preço médio de 1-2 itens
+        # Update average price for 1-2 items
         cur.execute("""
             SELECT TOP 2 ItemCode, AvgPrice
             FROM dbo.OITM
@@ -524,14 +524,14 @@ def update_masters(
                 SET AvgPrice=?, LastPurPrc=?, UpdateDate=?, UpdateTS=?
                 WHERE ItemCode=?
             """, round(new_price, 6), round(new_price, 6), sim_date, ts, item_code)
-            log.info("  OITM atualizado: ItemCode=%s novo AvgPrice=%.4f", item_code, new_price)
+            log.info("  OITM updated: ItemCode=%s new AvgPrice=%.4f", item_code, new_price)
 
     conn.commit()
-    log.info("Cadastros atualizados: %d clientes, %d itens.", len(client_codes), len(items))
+    log.info("Master data updated: %d clients, %d items.", len(client_codes), len(items))
 
 
 # ---------------------------------------------------------------------------
-# Ação 5 — Novo lote recebido
+# Action 5 — New lot received
 # ---------------------------------------------------------------------------
 
 
@@ -545,7 +545,7 @@ def insert_new_lot(
     ym = sim_date.strftime("%Y%m")
 
     with conn.cursor() as cur:
-        # Escolhe itens para receber lote (prioritiza os que têm poucos lotes ativos)
+        # Pick items to receive lots (prioritizes those with fewer active lots)
         cur.execute("""
             SELECT TOP 5 o.ItemCode, o.ItemName,
                    CASE WHEN o.ItemCode IN ('INSUR','ERTP004') THEN 'PA02' ELSE 'PA01' END
@@ -588,17 +588,17 @@ def insert_new_lot(
                 adm_date, ts, adm_date, ts,
             )
             log.info(
-                "  OBTN novo lote: %s ItemCode=%s ExpDate=%s Qty=%.0f",
+                "  OBTN new lot: %s ItemCode=%s ExpDate=%s Qty=%.0f",
                 batch_num, item_code, exp_date, qty,
             )
             inserted += 1
 
     conn.commit()
-    log.info("Novos lotes recebidos: %d.", inserted)
+    log.info("New lots received: %d.", inserted)
 
 
 # ---------------------------------------------------------------------------
-# Ação 6 — Inativar cliente (testa reconciliação de exclusões no lake)
+# Action 6 — Inactivate customer (tests deletion reconciliation in the lake)
 # ---------------------------------------------------------------------------
 
 
@@ -613,7 +613,7 @@ def maybe_inactivate_client(
 
     ts = _ts_now()
     with conn.cursor() as cur:
-        # Escolhe cliente sem pedidos abertos nos últimos 60 dias
+        # Pick a customer with no open orders in the last 60 days
         cur.execute("""
             SELECT TOP 1 CardCode, CardName
             FROM dbo.OCRD
@@ -637,7 +637,7 @@ def maybe_inactivate_client(
 
     conn.commit()
     log.info(
-        "Cliente inativado (validFor='N'): CardCode=%s — testa reconciliação no lake.",
+        "Customer inactivated (validFor='N'): CardCode=%s — tests deletion reconciliation in the lake.",
         card_code,
     )
 
@@ -648,29 +648,29 @@ def maybe_inactivate_client(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Simulador de atividade SBO_PHARMA_LAB")
+    parser = argparse.ArgumentParser(description="Activity simulator SBO_PHARMA_LAB")
     parser.add_argument(
         "--date",
         default=date.today().isoformat(),
-        help="Data de simulação (YYYY-MM-DD, padrão: hoje)",
+        help="Simulation date (YYYY-MM-DD, default: today)",
     )
     parser.add_argument(
         "--orders",
         type=int,
         default=3,
-        help="Número de novos pedidos a criar (padrão: 3)",
+        help="Number of new orders to create (default: 3)",
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Lê o estado do banco mas não grava nada",
+        help="Read database state but do not write anything",
     )
     args = parser.parse_args()
 
     sim_date = date.fromisoformat(args.date)
-    rng      = random.Random()  # sem seed — resultado diferente a cada execução
+    rng      = random.Random()  # no seed — different result on each run
 
-    log.info("Simulando atividade para %s (--orders=%d).", sim_date, args.orders)
+    log.info("Simulating activity for %s (--orders=%d).", sim_date, args.orders)
 
     conn = get_connection()
     try:
@@ -682,44 +682,44 @@ def main() -> None:
             next_inv    = _next_doc_num(cur, "OINV")
 
         log.info(
-            "Estado atual: %d clientes ativos, %d item/lote combos, "
-            "%d pedidos abertos. Próximos DocNum: ORDR=%d OINV=%d.",
+            "Current state: %d active clients, %d item/lot combos, "
+            "%d open orders. Next DocNum: ORDR=%d OINV=%d.",
             len(clients), len(items), len(open_orders), next_order, next_inv,
         )
 
         if not clients:
-            log.error("Nenhum cliente ativo encontrado. Execute historical_load.py primeiro.")
+            log.error("No active clients found. Run historical_load.py first.")
             return
         if not items:
-            log.error("Nenhum item com lote ativo. Execute historical_load.py primeiro.")
+            log.error("No items with active lots. Run historical_load.py first.")
             return
 
         if args.dry_run:
-            log.info("--dry-run: nenhuma gravação realizada.")
+            log.info("--dry-run: no writes performed.")
             return
 
-        log.info("--- 1/6  Novos pedidos ---")
+        log.info("--- 1/6  New orders ---")
         insert_new_orders(conn, rng, clients, items, sim_date, args.orders, next_order)
 
-        log.info("--- 2/6  Faturamento ---")
+        log.info("--- 2/6  Invoicing ---")
         invoice_open_orders(conn, rng, open_orders, sim_date, next_inv)
 
-        log.info("--- 3/6  Cancelamento ---")
+        log.info("--- 3/6  Cancellation ---")
         cancel_order(conn, open_orders, sim_date)
 
-        log.info("--- 4/6  Alterações de cadastro ---")
+        log.info("--- 4/6  Master data updates ---")
         update_masters(conn, rng, sim_date)
 
-        log.info("--- 5/6  Recebimento de lote ---")
+        log.info("--- 5/6  Lot receipt ---")
         insert_new_lot(conn, rng, sim_date)
 
-        log.info("--- 6/6  Inativação de cliente (probabilística) ---")
+        log.info("--- 6/6  Customer inactivation (probabilistic) ---")
         maybe_inactivate_client(conn, rng, sim_date)
 
-        log.info("Simulação concluída para %s.", sim_date)
+        log.info("Simulation complete for %s.", sim_date)
     finally:
         conn.close()
-        log.info("Conexão fechada.")
+        log.info("Connection closed.")
 
 
 if __name__ == "__main__":

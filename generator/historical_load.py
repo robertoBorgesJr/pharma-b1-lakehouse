@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-historical_load.py — Carga histórica de ~2 anos para o banco SBO_PHARMA_LAB.
+historical_load.py — Historical load of ~2 years for the SBO_PHARMA_LAB database.
 
-Gera dados sintéticos com cara de indústria farmacêutica (lotes, validade,
-sazonalidade, rastreabilidade fiscal) e os insere em lote no Azure SQL,
-respeitando as restrições de cota: conectar → inserir → desconectar.
+Generates synthetic data with a pharmaceutical-industry flavour (lots, expiry dates,
+seasonality, fiscal traceability) and inserts it in batches into Azure SQL,
+respecting the quota constraints: connect → insert → disconnect.
 
-Uso:
+Usage:
     python generator/historical_load.py
-    python generator/historical_load.py --reset      # limpa as tabelas antes
-    python generator/historical_load.py --dry-run    # só exibe volumes, não conecta
+    python generator/historical_load.py --reset      # truncate tables first
+    python generator/historical_load.py --dry-run    # only display volumes, do not connect
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ import pyodbc
 from dotenv import load_dotenv
 
 # ---------------------------------------------------------------------------
-# Configuração
+# Configuration
 # ---------------------------------------------------------------------------
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -50,7 +50,7 @@ START_DATE = date(2024, 11, 1)
 END_DATE   = date(2026, 11, 24)
 
 # ---------------------------------------------------------------------------
-# Conexão
+# Connection
 # ---------------------------------------------------------------------------
 
 
@@ -73,12 +73,12 @@ def get_connection() -> pyodbc.Connection:
 
 
 # ---------------------------------------------------------------------------
-# Utilitários de tempo
+# Time utilities
 # ---------------------------------------------------------------------------
 
 
 def ts_from_hms(h: int, m: int, s: int) -> int:
-    """Converte hora/minuto/segundo no inteiro HHMMSS do B1."""
+    """Converts hour/minute/second to B1's HHMMSS integer."""
     return h * 10_000 + m * 100 + s
 
 
@@ -87,7 +87,7 @@ def rand_ts(rng: random.Random) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Catálogos de referência
+# Reference catalogs
 # ---------------------------------------------------------------------------
 
 WAREHOUSES: list[dict[str, Any]] = [
@@ -100,34 +100,34 @@ WAREHOUSES: list[dict[str, Any]] = [
 
 # (ItemCode, ItemName, FrgnName, ItmsGrpCod, TaxCode, RegANVISA, MngMethod, PrcrmntMtd, shelf_months)
 _ITEMS_CATALOG: list[tuple[str, str, str, int, str | None, str | None, str, str, int]] = [
-    # Antibióticos (100)
+    # Antibiotics (100)
     ("AMOX500",  "Amoxicilina 500mg Caps",          "Amoxicillin 500mg",         100, "NCM300410", "1234567890001-9", "F", "M", 36),
     ("AZIT500",  "Azitromicina 500mg Comp",          "Azithromycin 500mg",        100, "NCM300410", "1234567890002-7", "F", "M", 24),
     ("CEFA500",  "Cefalexina 500mg Caps",            "Cephalexin 500mg",          100, "NCM300410", "1234567890003-5", "F", "M", 36),
-    # Analgésicos/Antipiréticos (101)
+    # Analgesics/Antipyretics (101)
     ("PARA750",  "Paracetamol 750mg Comp",           "Paracetamol 750mg",         101, "NCM300490", "1234567890004-3", "F", "M", 48),
     ("DIPI500",  "Dipirona Sódica 500mg Comp",       "Dipyrone 500mg",            101, "NCM300490", "1234567890005-1", "F", "M", 48),
-    # Anti-inflamatórios (102)
+    # Anti-inflammatories (102)
     ("IBUP600",  "Ibuprofeno 600mg Comp Rev",        "Ibuprofen 600mg",           102, "NCM300490", "1234567890007-8", "F", "M", 36),
     ("DICL050",  "Diclofenaco Sódico 50mg Comp",     "Diclofenac Na 50mg",        102, "NCM300490", "1234567890008-6", "F", "M", 36),
-    # Cardiovascular / Metabólico (103)
+    # Cardiovascular / Metabolic (103)
     ("LOSA050",  "Losartana Potássica 50mg Comp",    "Losartan K 50mg",           103, "NCM300490", "1234567890009-4", "F", "M", 48),
     ("ATEN025",  "Atenolol 25mg Comp",               "Atenolol 25mg",             103, "NCM300490", "1234567890010-8", "F", "M", 48),
     ("SINV020",  "Sinvastatina 20mg Comp",           "Simvastatin 20mg",          103, "NCM300490", "1234567890011-6", "F", "M", 36),
     ("ANLO005",  "Anlodipino 5mg Comp",              "Amlodipine 5mg",            103, "NCM300490", "1234567890012-4", "F", "M", 48),
     ("METF850",  "Metformina 850mg Comp",            "Metformin 850mg",           103, "NCM300490", "1234567890013-2", "F", "M", 48),
     ("GLIB005",  "Glibenclamida 5mg Comp",           "Glibenclamide 5mg",         103, "NCM300490", "1234567890014-0", "F", "M", 48),
-    # Respiratório (104)
+    # Respiratory (104)
     ("SALB100",  "Salbutamol 100mcg Spray",          "Salbutamol 100mcg Inhaler", 104, "NCM300490", "1234567890015-9", "F", "M", 24),
     ("BUDE200",  "Budesonida 200mcg Spray",          "Budesonide 200mcg Inhaler", 104, "NCM300490", "1234567890016-7", "F", "M", 24),
-    # Vitaminas/Suplementos (105)
+    # Vitamins/Supplements (105)
     ("VITC001",  "Vitamina C 1g Efervescente",       "Vitamin C 1g",              105, "NCM300450", "1234567890017-5", "F", "M", 36),
     ("VITD003",  "Vitamina D3 2000UI Caps",          "Vitamin D3 2000IU",         105, "NCM300450", "1234567890018-3", "F", "M", 24),
     ("CXBVIT",   "Complexo B 60 Comp",               "Vitamin B Complex",         105, "NCM300450", "1234567890019-1", "F", "M", 36),
-    # Termolábeis → câmara fria PA02 (103 reutilizado por grupo)
+    # Heat-sensitive → cold chain PA02 (group 103 reused)
     ("INSUR",    "Insulina Regular 100UI/mL Fr",     "Insulin Regular 100IU/mL",  103, "NCM300431", "1234567890020-5", "F", "M", 18),
     ("ERTP004",  "Eritropoetina 4000UI/mL Fr",       "Erythropoietin 4000IU/mL",  103, "NCM300431", "1234567890021-3", "F", "M", 12),
-    # Matéria-prima (200) — PrcrmntMtd='B', não são vendidos
+    # Raw materials (200) — PrcrmntMtd='B', not sold
     ("MP-AMOX",  "Amoxicilina Trihidratada - MP",    "Amoxicillin Trihydrate USP",200, None, None, "F", "B", 24),
     ("MP-PARA",  "Paracetamol - MP",                 "Paracetamol USP",           200, None, None, "F", "B", 36),
     ("MP-IBUP",  "Ibuprofeno - MP",                  "Ibuprofen USP",             200, None, None, "F", "B", 36),
@@ -138,7 +138,7 @@ SELLABLE_CODES: list[str]   = [i[0] for i in _ITEMS_CATALOG if i[7] == "M"]
 COLD_CHAIN_CODES: set[str]  = {"INSUR", "ERTP004"}
 ITEM_SHELF_MONTHS: dict[str, int] = {i[0]: i[8] for i in _ITEMS_CATALOG}
 
-# Pesos de popularidade de venda (antibióticos e crônicos vendem mais)
+# Sales popularity weights (antibiotics and chronic medications sell more)
 _ITEM_WEIGHTS: dict[str, float] = {
     "PARA750": 3.0, "DIPI500": 2.5, "AMOX500": 2.5, "IBUP600": 2.0,
     "LOSA050": 2.5, "METF850": 2.5, "ATEN025": 2.0, "SINV020": 2.0,
@@ -168,7 +168,7 @@ CFOP_INTRA = "5102"
 CFOP_INTER = "6102"
 
 # ---------------------------------------------------------------------------
-# Geradores de dados mestres
+# Master data generators
 # ---------------------------------------------------------------------------
 
 
@@ -310,7 +310,7 @@ def gen_lots(items: list[dict[str, Any]], rng: random.Random) -> list[dict[str, 
             adm = mfg + timedelta(days=rng.randint(1, 7))
             exp = mfg + timedelta(days=shelf * 30)
             qty = round(rng.uniform(2000, 15000), 0)
-            # Lotes com vencimento antes de hoje já foram consumidos/vencidos
+            # Lots expiring before today have already been consumed/expired
             status = "C" if exp < END_DATE - timedelta(days=30) else "A"
             batch_num = f"L{mfg.strftime('%Y%m')}{code[:4].upper()}{seq:03d}"
             ts = rand_ts(rng)
@@ -338,12 +338,12 @@ def gen_lots(items: list[dict[str, Any]], rng: random.Random) -> list[dict[str, 
 
 
 # ---------------------------------------------------------------------------
-# Gerador de documentos (pedidos + NFs)
+# Document generator (orders + invoices)
 # ---------------------------------------------------------------------------
 
 
 def _seasonal_weight(d: date) -> float:
-    """Q1 e Q4 concentram mais vendas no setor farmacêutico."""
+    """Q1 and Q4 concentrate higher sales in the pharma sector."""
     if d.month in (1, 2, 3, 10, 11, 12):
         return 1.4
     if d.month in (6, 7, 8):
@@ -352,7 +352,7 @@ def _seasonal_weight(d: date) -> float:
 
 
 def _nfe_chave(inv_date: date, seq_nf: str, rng: random.Random) -> str:
-    """Gera chave de acesso NF-e fictícia de exatamente 44 dígitos."""
+    """Generates a fictional NF-e access key of exactly 44 digits."""
     # cUF(2) AAMM(4) CNPJ(14) mod(2) serie(3) nNF(9) tpEmis(1) cNF(8) cDV(1) = 44
     return (
         "35"
@@ -384,16 +384,16 @@ def gen_orders_and_invoices(
     invoices: list[dict] = []
     inv_lines: list[dict] = []
 
-    current    = START_DATE + timedelta(days=31)  # mestres criados no primeiro mês
+    current    = START_DATE + timedelta(days=31)  # master data created in the first month
     last_month = None
 
     while current <= END_DATE:
-        if current.weekday() >= 5:  # sem pedidos aos sábados e domingos
+        if current.weekday() >= 5:  # no orders on Saturdays and Sundays
             current += timedelta(days=1)
             continue
 
         if current.month != last_month:
-            log.info("  gerando pedidos de %s-%02d…", current.year, current.month)
+            log.info("  generating orders for %s-%02d...", current.year, current.month)
             last_month = current.month
 
         n_orders = max(1, min(int(rng.gauss(3 * _seasonal_weight(current), 1.0)), 8))
@@ -402,7 +402,7 @@ def gen_orders_and_invoices(
             client   = rng.choice(ctx.clients)
             n_lines  = rng.randint(1, 5)
             items    = rng.choices(SELLABLE_CODES, weights=ITEM_WEIGHTS, k=n_lines)
-            items    = list(dict.fromkeys(items))  # deduplica mantendo ordem
+            items    = list(dict.fromkeys(items))  # deduplicate preserving order
 
             canceled = rng.random() < 0.04
             invoiced = not canceled and rng.random() < 0.90
@@ -451,7 +451,7 @@ def gen_orders_and_invoices(
 
             slp  = rng.randint(1, 5)
             grp  = rng.randint(1, 3)
-            ref  = ctx.order_num  # DocNum local — resolve para DocEntry após INSERT
+            ref  = ctx.order_num  # local DocNum — resolved to DocEntry after INSERT
 
             orders.append({
                 "DocNum":     ctx.order_num,
@@ -491,7 +491,7 @@ def gen_orders_and_invoices(
                     "CANCELED":   "N",
                     "CardCode":   client["CardCode"],
                     "CardName":   client["CardName"],
-                    "_base_ref":  ref,  # DocNum do ORDR de origem
+                    "_base_ref":  ref,  # source ORDR DocNum
                     "DocDate":    inv_date,
                     "DocDueDate": inv_due,
                     "TaxDate":    inv_date,
@@ -513,8 +513,8 @@ def gen_orders_and_invoices(
                 })
                 for ln_idx, lr in enumerate(line_buf):
                     inv_lines.append({
-                        "_inv_ref":   ctx.inv_num,  # DocNum do OINV
-                        "_base_ref":  ref,           # DocNum do ORDR de origem
+                        "_inv_ref":   ctx.inv_num,  # OINV DocNum
+                        "_base_ref":  ref,           # source ORDR DocNum
                         "LineNum":    ln_idx,
                         "ItemCode":   lr["ItemCode"],
                         "Dscription": lr["Dscription"],
@@ -541,7 +541,7 @@ def gen_orders_and_invoices(
 
 
 # ---------------------------------------------------------------------------
-# Inserções em lote
+# Batch inserts
 # ---------------------------------------------------------------------------
 
 
@@ -579,7 +579,7 @@ def insert_warehouses(conn: pyodbc.Connection, rows: list[dict]) -> None:
     with conn.cursor() as cur:
         _batch_exec(cur, sql, tuples)
     conn.commit()
-    log.info("OWHS: %d linhas", len(rows))
+    log.info("OWHS: %d rows", len(rows))
 
 
 def insert_items(conn: pyodbc.Connection, rows: list[dict]) -> None:
@@ -627,7 +627,7 @@ def insert_items(conn: pyodbc.Connection, rows: list[dict]) -> None:
     with conn.cursor() as cur:
         _batch_exec(cur, sql, tuples)
     conn.commit()
-    log.info("OITM: %d linhas", len(rows))
+    log.info("OITM: %d rows", len(rows))
 
 
 def insert_clients(conn: pyodbc.Connection, rows: list[dict]) -> None:
@@ -672,7 +672,7 @@ def insert_clients(conn: pyodbc.Connection, rows: list[dict]) -> None:
     with conn.cursor() as cur:
         _batch_exec(cur, sql, tuples)
     conn.commit()
-    log.info("OCRD: %d linhas", len(rows))
+    log.info("OCRD: %d rows", len(rows))
 
 
 def insert_stock(conn: pyodbc.Connection, rows: list[dict]) -> None:
@@ -704,7 +704,7 @@ def insert_stock(conn: pyodbc.Connection, rows: list[dict]) -> None:
     with conn.cursor() as cur:
         _batch_exec(cur, sql, tuples)
     conn.commit()
-    log.info("OITW: %d linhas", len(rows))
+    log.info("OITW: %d rows", len(rows))
 
 
 def insert_lots(conn: pyodbc.Connection, rows: list[dict]) -> None:
@@ -739,7 +739,7 @@ def insert_lots(conn: pyodbc.Connection, rows: list[dict]) -> None:
     with conn.cursor() as cur:
         _batch_exec(cur, sql, tuples)
     conn.commit()
-    log.info("OBTN: %d linhas", len(rows))
+    log.info("OBTN: %d rows", len(rows))
 
 
 def insert_orders(
@@ -747,13 +747,13 @@ def insert_orders(
     orders: list[dict],
     order_lines: list[dict],
 ) -> dict[int, int]:
-    """Insere ORDR e RDR1. Retorna mapa {DocNum → real DocEntry IDENTITY}.
-    Se ORDR já contiver dados, lê o mapa existente sem re-inserir
-    (use --reset para recarregar do zero)."""
+    """Inserts ORDR and RDR1. Returns map {DocNum → real IDENTITY DocEntry}.
+    If ORDR already has data, reads the existing map without reinserting
+    (use --reset to reload from scratch)."""
     with conn.cursor() as cur:
         cur.execute("SELECT COUNT(1) FROM dbo.ORDR")
         if cur.fetchone()[0] > 0:
-            log.warning("ORDR já populado — lendo mapa DocNum→DocEntry sem re-inserir; use --reset para recarga completa.")
+            log.warning("ORDR already populated — reading DocNum→DocEntry map without reinserting; use --reset for a full reload.")
             cur.execute("SELECT DocNum, DocEntry FROM dbo.ORDR")
             return {row[0]: row[1] for row in cur.fetchall()}
 
@@ -804,7 +804,7 @@ def insert_orders(
         _batch_exec(cur, sql_line, line_tuples)
 
     conn.commit()
-    log.info("ORDR: %d / RDR1: %d linhas", len(orders), len(order_lines))
+    log.info("ORDR: %d / RDR1: %d rows", len(orders), len(order_lines))
     return doc_num_to_entry
 
 
@@ -817,7 +817,7 @@ def insert_invoices(
     with conn.cursor() as cur:
         cur.execute("SELECT COUNT(1) FROM dbo.OINV")
         if cur.fetchone()[0] > 0:
-            log.warning("OINV já populado — pulando inserção; use --reset para recarga completa.")
+            log.warning("OINV already populated — skipping insertion; use --reset for a full reload.")
             return
 
     sql_hdr = """
@@ -874,7 +874,7 @@ def insert_invoices(
         _batch_exec(cur, sql_line, line_tuples)
 
     conn.commit()
-    log.info("OINV: %d / INV1: %d linhas", len(invoices), len(inv_lines))
+    log.info("OINV: %d / INV1: %d rows", len(invoices), len(inv_lines))
 
 
 # ---------------------------------------------------------------------------
@@ -883,22 +883,22 @@ def insert_invoices(
 
 
 def reset_tables(conn: pyodbc.Connection) -> None:
-    # Ordem respeita FKs: filhos antes dos pais
+    # Order respects FKs: children before parents
     tables_ordered = ["INV1", "OINV", "RDR1", "ORDR", "OBTN", "OITW", "OCRD", "OITM", "OWHS"]
     identity_tables = {"OBTN", "ORDR", "OINV"}
     with conn.cursor() as cur:
         for t in tables_ordered:
             cur.execute(f"DELETE FROM dbo.{t}")
-    conn.commit()  # commit antes do DBCC; DBCC falha dentro de transação aberta no Azure SQL
+    conn.commit()  # commit before DBCC; DBCC fails inside an open transaction on Azure SQL
     with conn.cursor() as cur:
         for t in identity_tables:
             cur.execute(f"DBCC CHECKIDENT ('dbo.{t}', RESEED, 0)")
     conn.commit()
-    log.info("Tabelas resetadas: %s", tables_ordered)
+    log.info("Tables reset: %s", tables_ordered)
 
 
 # ---------------------------------------------------------------------------
-# Estado global do RNG (reiniciado em main para reprodutibilidade)
+# Global RNG state (re-seeded in main for reproducibility)
 # ---------------------------------------------------------------------------
 
 rng_global: random.Random = random.Random(SEED)
@@ -910,20 +910,20 @@ rng_global: random.Random = random.Random(SEED)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Carga histórica SBO_PHARMA_LAB")
-    parser.add_argument("--reset",   action="store_true", help="Limpa as tabelas antes da carga")
-    parser.add_argument("--dry-run", action="store_true", help="Gera dados mas não conecta ao banco")
+    parser = argparse.ArgumentParser(description="Historical load SBO_PHARMA_LAB")
+    parser.add_argument("--reset",   action="store_true", help="Truncate tables before loading")
+    parser.add_argument("--dry-run", action="store_true", help="Generate data but do not connect to the database")
     args = parser.parse_args()
 
     global rng_global
     rng_global = random.Random(SEED)
 
-    log.info("Período: %s → %s", START_DATE, END_DATE)
+    log.info("Period: %s → %s", START_DATE, END_DATE)
 
     ref = START_DATE
     t0  = time.monotonic()
 
-    log.info("Gerando mestres…")
+    log.info("Generating master data...")
     whs_rows    = gen_warehouses(ref, rng_global)
     item_rows   = gen_items(ref, rng_global)
     client_rows = gen_clients(50, ref, rng_global)
@@ -934,12 +934,12 @@ def main() -> None:
     for lot in lot_rows:
         lots_by_item.setdefault(lot["ItemCode"], []).append(lot["BatchNum"])
 
-    log.info("Gerando pedidos e notas fiscais…")
+    log.info("Generating orders and invoices...")
     ctx = _DocCtx(order_num=1, inv_num=1, clients=client_rows, lots_by_item=lots_by_item)
     orders, order_lines, invoices, inv_lines = gen_orders_and_invoices(ctx, rng_global)
 
     log.info(
-        "Volumes gerados — OCRD:%d OITM:%d OWHS:%d OITW:%d OBTN:%d "
+        "Generated volumes — OCRD:%d OITM:%d OWHS:%d OITW:%d OBTN:%d "
         "ORDR:%d RDR1:%d OINV:%d INV1:%d (%.1fs)",
         len(client_rows), len(item_rows), len(whs_rows), len(stock_rows), len(lot_rows),
         len(orders), len(order_lines), len(invoices), len(inv_lines),
@@ -947,10 +947,10 @@ def main() -> None:
     )
 
     if args.dry_run:
-        log.info("--dry-run: nenhuma conexão aberta.")
+        log.info("--dry-run: no connection opened.")
         return
 
-    log.info("Conectando ao banco…")
+    log.info("Connecting to database...")
     conn = get_connection()
     try:
         if args.reset:
@@ -964,10 +964,10 @@ def main() -> None:
         order_map = insert_orders(conn, orders, order_lines)
         insert_invoices(conn, invoices, inv_lines, order_map)
 
-        log.info("Carga concluída em %.1fs.", time.monotonic() - t0)
+        log.info("Load complete in %.1fs.", time.monotonic() - t0)
     finally:
         conn.close()
-        log.info("Conexão fechada.")
+        log.info("Connection closed.")
 
 
 if __name__ == "__main__":

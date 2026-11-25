@@ -1,57 +1,57 @@
 -- =============================================================================
--- OINV - AR Invoices Header (Cabeçalho de Notas Fiscais de Saída)
--- INV1 - AR Invoices Lines  (Linhas de Notas Fiscais de Saída)
--- SAP B1 pattern: igual a ORDR mas representa NF emitida (documento fiscal)
+-- OINV - AR Invoices Header
+-- INV1 - AR Invoices Lines
+-- SAP B1 pattern: same as ORDR but represents an issued NF (fiscal document)
 -- =============================================================================
 
 -- ---------------------------------------------------------------------------
--- OINV — Cabeçalho
+-- OINV — Header
 -- ---------------------------------------------------------------------------
 IF OBJECT_ID('dbo.OINV', 'U') IS NOT NULL DROP TABLE dbo.OINV;
 
 CREATE TABLE dbo.OINV (
-    -- Chave
+    -- Key
     DocEntry        INT             NOT NULL IDENTITY(1,1),
     DocNum          INT             NOT NULL,
     DocType         CHAR(1)         NOT NULL DEFAULT 'I',
 
-    -- Status — NF só é "cancelada" ('Y') ou "fechada" ('C'); nunca apagada
-    DocStatus       CHAR(1)         NOT NULL DEFAULT 'O',   -- 'O'=aberto, 'C'=fechado/pago
+    -- Status — NF is only 'cancelled' ('Y') or 'closed' ('C'); never deleted
+    DocStatus       CHAR(1)         NOT NULL DEFAULT 'O',   -- 'O'=open, 'C'=closed/paid
     CANCELED        CHAR(1)         NOT NULL DEFAULT 'N',
 
-    -- Parceiro
+    -- Partner
     CardCode        NVARCHAR(15)    NOT NULL,
     CardName        NVARCHAR(100)   NOT NULL,
 
-    -- Rastreabilidade com o pedido de origem
-    BaseEntry       INT             NULL,                   -- DocEntry da ORDR de origem
+    -- Traceability to source order
+    BaseEntry       INT             NULL,                   -- DocEntry of the source ORDR
 
-    -- Datas
-    DocDate         DATE            NOT NULL,               -- data de emissão
-    DocDueDate      DATE            NOT NULL,               -- data de vencimento
+    -- Dates
+    DocDate         DATE            NOT NULL,               -- issue date
+    DocDueDate      DATE            NOT NULL,               -- due date
     TaxDate         DATE            NULL,
 
-    -- Chave de Acesso NF-e (farmacêutico: rastreabilidade fiscal)
-    FolioNum        NVARCHAR(50)    NULL,                   -- número da NF
-    Series          NVARCHAR(3)     NULL,                   -- série da NF
-    ChaveNFe        NVARCHAR(44)    NULL,                   -- chave de acesso NF-e (44 dígitos)
+    -- NF-e Access Key (pharma: fiscal traceability)
+    FolioNum        NVARCHAR(50)    NULL,                   -- invoice number
+    Series          NVARCHAR(3)     NULL,                   -- invoice series
+    ChaveNFe        NVARCHAR(44)    NULL,                   -- NF-e access key (44 digits)
 
-    -- Depósito
+    -- Warehouse
     WhsCode         NVARCHAR(8)     NULL,
 
-    -- Totais
+    -- Totals
     DocTotal        DECIMAL(19,6)   NOT NULL DEFAULT 0,
     VatSum          DECIMAL(19,6)   NOT NULL DEFAULT 0,
     DiscSum         DECIMAL(19,6)   NOT NULL DEFAULT 0,
     PaidToDate      DECIMAL(19,6)   NOT NULL DEFAULT 0,
 
-    -- Representante / condição
+    -- Sales rep / payment terms
     SlpCode         SMALLINT        NULL,
     GroupNum        SMALLINT        NULL,
 
     Comments        NVARCHAR(254)   NULL,
 
-    -- Auditoria / watermark
+    -- Audit / watermark
     CreateDate      DATE            NOT NULL,
     CreateTS        INT             NOT NULL DEFAULT 0,
     UpdateDate      DATE            NOT NULL,
@@ -71,7 +71,7 @@ CREATE INDEX IX_OINV_BaseEntry  ON dbo.OINV (BaseEntry);
 
 
 -- ---------------------------------------------------------------------------
--- INV1 — Linhas
+-- INV1 — Lines
 -- ---------------------------------------------------------------------------
 IF OBJECT_ID('dbo.INV1', 'U') IS NOT NULL DROP TABLE dbo.INV1;
 
@@ -84,26 +84,26 @@ CREATE TABLE dbo.INV1 (
     Dscription      NVARCHAR(100)   NOT NULL,
     Quantity        DECIMAL(19,6)   NOT NULL DEFAULT 0,
 
-    -- Preços
+    -- Prices
     Price           DECIMAL(19,6)   NOT NULL DEFAULT 0,
     PriceAfVAT      DECIMAL(19,6)   NOT NULL DEFAULT 0,
     DiscPrcnt       DECIMAL(19,6)   NOT NULL DEFAULT 0,
     LineTotal       DECIMAL(19,6)   NOT NULL DEFAULT 0,
     VatSum          DECIMAL(19,6)   NOT NULL DEFAULT 0,
 
-    -- Depósito e lote (rastreabilidade — crítico farma)
+    -- Warehouse and lot (traceability — critical pharma)
     WhsCode         NVARCHAR(8)     NULL,
     BatchNum        NVARCHAR(50)    NULL,
 
-    -- Rastreabilidade com linha do pedido de origem
+    -- Traceability to source order line
     BaseEntry       INT             NULL,
     BaseLine        INT             NULL,
 
     -- Fiscal
     TaxCode         NVARCHAR(20)    NULL,
-    CFOPCode        NVARCHAR(5)     NULL,                   -- CFOP (fiscal Brasil)
+    CFOPCode        NVARCHAR(5)     NULL,                   -- CFOP (Brazilian fiscal code)
 
-    LineStatus      CHAR(1)         NOT NULL DEFAULT 'C',   -- linhas de NF sempre fechadas
+    LineStatus      CHAR(1)         NOT NULL DEFAULT 'C',   -- NF lines are always closed
 
     CONSTRAINT PK_INV1      PRIMARY KEY (DocEntry, LineNum),
     CONSTRAINT FK_INV1_OINV FOREIGN KEY (DocEntry)  REFERENCES dbo.OINV (DocEntry),
@@ -111,5 +111,5 @@ CREATE TABLE dbo.INV1 (
 );
 
 CREATE INDEX IX_INV1_ItemCode  ON dbo.INV1 (ItemCode);
-CREATE INDEX IX_INV1_BatchNum  ON dbo.INV1 (BatchNum);     -- rastreabilidade por lote
+CREATE INDEX IX_INV1_BatchNum  ON dbo.INV1 (BatchNum);     -- lot traceability
 CREATE INDEX IX_INV1_BaseEntry ON dbo.INV1 (BaseEntry, BaseLine);

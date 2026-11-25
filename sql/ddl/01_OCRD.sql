@@ -1,43 +1,43 @@
 -- =============================================================================
--- OCRD - Business Partners (Parceiros de Negócio)
--- SAP B1 pattern: CardCode PK, watermark por UpdateDate + UpdateTS
+-- OCRD - Business Partners
+-- SAP B1 pattern: CardCode PK, watermark by UpdateDate + UpdateTS
 -- =============================================================================
 IF OBJECT_ID('dbo.OCRD', 'U') IS NOT NULL DROP TABLE dbo.OCRD;
 
 CREATE TABLE dbo.OCRD (
-    -- Chave
-    CardCode        NVARCHAR(15)    NOT NULL,   -- código único do parceiro (ex.: C00001, F00001)
+    -- Key
+    CardCode        NVARCHAR(15)    NOT NULL,   -- unique partner code (e.g. C00001, F00001)
     CardName        NVARCHAR(100)   NOT NULL,
-    CardType        CHAR(1)         NOT NULL,   -- 'C'=Cliente, 'S'=Fornecedor, 'L'=Lead
+    CardType        CHAR(1)         NOT NULL,   -- 'C'=Customer, 'S'=Supplier, 'L'=Lead
 
-    -- Dados fiscais
+    -- Fiscal data
     LicTradNum      NVARCHAR(32)    NULL,       -- CNPJ/CPF
-    TaxIdNum        NVARCHAR(32)    NULL,       -- inscrição estadual
+    TaxIdNum        NVARCHAR(32)    NULL,       -- state tax registration
 
-    -- Endereço principal
+    -- Primary address
     Address         NVARCHAR(100)   NULL,
     ZipCode         NVARCHAR(20)    NULL,
     City            NVARCHAR(100)   NULL,
     State           NVARCHAR(3)     NULL,
     Country         NVARCHAR(3)     NULL DEFAULT 'BR',
 
-    -- Contato
+    -- Contact
     Phone1          NVARCHAR(20)    NULL,
     E_Mail          NVARCHAR(100)   NULL,
 
-    -- Classificação
-    GroupCode       SMALLINT        NULL,       -- grupo de parceiros
-    SlpCode         SMALLINT        NULL,       -- código do representante
+    -- Classification
+    GroupCode       SMALLINT        NULL,       -- partner group
+    SlpCode         SMALLINT        NULL,       -- sales rep code
 
     -- Status
-    validFor        CHAR(1)         NOT NULL DEFAULT 'Y',   -- 'Y'=ativo, 'N'=inativo
-    frozenFor       CHAR(1)         NOT NULL DEFAULT 'N',   -- bloqueado
+    validFor        CHAR(1)         NOT NULL DEFAULT 'Y',   -- 'Y'=active, 'N'=inactive
+    frozenFor       CHAR(1)         NOT NULL DEFAULT 'N',   -- blocked/frozen
 
-    -- Auditoria / watermark
+    -- Audit / watermark
     CreateDate      DATE            NOT NULL,
-    CreateTS        INT             NOT NULL DEFAULT 0,     -- hora criação HHMMSS
+    CreateTS        INT             NOT NULL DEFAULT 0,     -- creation time HHMMSS
     UpdateDate      DATE            NOT NULL,
-    UpdateTS        INT             NOT NULL DEFAULT 0,     -- hora última atualização HHMMSS
+    UpdateTS        INT             NOT NULL DEFAULT 0,     -- last update time HHMMSS
 
     CONSTRAINT PK_OCRD PRIMARY KEY (CardCode)
 );

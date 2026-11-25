@@ -1,39 +1,39 @@
 -- =============================================================================
--- OBTN - Batch Numbers (Lotes)
--- SAP B1 pattern: rastreabilidade e validade — crítico no setor farmacêutico
--- AbsEntry PK interna; BatchNum é o código visível (ex.: L2024001)
+-- OBTN - Batch Numbers (Lots)
+-- SAP B1 pattern: traceability and expiry — critical in the pharma sector
+-- AbsEntry internal PK; BatchNum is the visible code (e.g. L2024001)
 -- =============================================================================
 IF OBJECT_ID('dbo.OBTN', 'U') IS NOT NULL DROP TABLE dbo.OBTN;
 
 CREATE TABLE dbo.OBTN (
-    -- Chave interna
+    -- Internal key
     AbsEntry        INT             NOT NULL IDENTITY(1,1),
 
-    -- Identificação do lote
+    -- Lot identification
     ItemCode        NVARCHAR(50)    NOT NULL,
-    BatchNum        NVARCHAR(50)    NOT NULL,   -- número do lote (ex.: L2024001)
+    BatchNum        NVARCHAR(50)    NOT NULL,   -- lot number (e.g. L2024001)
     WhsCode         NVARCHAR(8)     NULL,
 
-    -- Farmacêutico
-    MfgDate         DATE            NULL,       -- data de fabricação
-    ExpDate         DATE            NULL,       -- data de validade — crítico farma/ANVISA
-    AdmDate         DATE            NULL,       -- data de admissão no estoque
+    -- Pharmaceutical
+    MfgDate         DATE            NULL,       -- manufacturing date
+    ExpDate         DATE            NULL,       -- expiry date — critical pharma/ANVISA
+    AdmDate         DATE            NULL,       -- admission date into stock
 
-    -- Quantidade
+    -- Quantity
     Quantity        DECIMAL(19,6)   NOT NULL DEFAULT 0,
 
-    -- Status do lote
-    -- 'A'=aprovado, 'Q'=quarentena, 'R'=reprovado, 'C'=consumido
+    -- Lot status
+    -- 'A'=approved, 'Q'=quarantine, 'R'=rejected, 'C'=consumed
     Status          NVARCHAR(1)     NOT NULL DEFAULT 'A',
 
-    -- Rastreabilidade ANVISA (farmacêutico)
-    LotNumber       NVARCHAR(50)    NULL,       -- número do lote do fornecedor
-    SuppLotNum      NVARCHAR(50)    NULL,       -- lote interno vs. lote do fornecedor
+    -- ANVISA traceability (pharmaceutical)
+    LotNumber       NVARCHAR(50)    NULL,       -- supplier lot number
+    SuppLotNum      NVARCHAR(50)    NULL,       -- internal lot vs. supplier lot
 
-    -- Notas
+    -- Notes
     Details         NVARCHAR(254)   NULL,
 
-    -- Auditoria / watermark
+    -- Audit / watermark
     CreateDate      DATE            NOT NULL,
     CreateTS        INT             NOT NULL DEFAULT 0,
     UpdateDate      DATE            NOT NULL,
@@ -46,4 +46,4 @@ CREATE TABLE dbo.OBTN (
 
 CREATE INDEX IX_OBTN_UpdateDate ON dbo.OBTN (UpdateDate, UpdateTS);
 CREATE INDEX IX_OBTN_ItemCode   ON dbo.OBTN (ItemCode, BatchNum);
-CREATE INDEX IX_OBTN_ExpDate    ON dbo.OBTN (ExpDate);   -- alertas de vencimento
+CREATE INDEX IX_OBTN_ExpDate    ON dbo.OBTN (ExpDate);   -- expiry alerts
